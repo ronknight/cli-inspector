@@ -13,7 +13,7 @@ import webbrowser
 from collections import Counter, defaultdict
 from pathlib import Path
 
-TOP_N = 60
+TOP_N = 100
 
 
 def load_source() -> Path:
@@ -97,7 +97,12 @@ def build_html(counts: Counter, dirs: dict[str, Counter]) -> str:
         }
         for cmd, n in top
     ]
-    return TEMPLATE.replace("/*__DATA__*/[]", json.dumps(nodes))
+    allrows = [
+        {"cmd": cmd, "count": n, "dirs": dirs.get(cmd, Counter()).most_common(3)}
+        for cmd, n in counts.most_common()
+    ]
+    html = TEMPLATE.replace("/*__DATA__*/[]", json.dumps(nodes))
+    return html.replace("/*__ALL__*/[]", json.dumps(allrows))
 
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -123,7 +128,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   #toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(80px);
            background:#0c1830; color:#7df9ff; border:1px solid #1f8fff; border-radius:8px;
            padding:10px 22px; font-size:14px; transition:transform .25s; pointer-events:none;
-           box-shadow:0 0 24px rgba(31,143,255,.5); }
+           box-shadow:0 0 24px rgba(31,143,255,.5); z-index:10; }
   #toast.show { transform:translateX(-50%) translateY(0); }
   h1 { position:fixed; top:14px; left:22px; margin:0; font-size:14px; font-weight:400;
        color:#3d6fa3; letter-spacing:3px; }

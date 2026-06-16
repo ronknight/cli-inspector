@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 TOP_N = 100
+RECENT_N = 300
 
 
 def load_source() -> Path:
@@ -47,12 +48,13 @@ def normalize(line: str) -> str | None:
 CD_RE = re.compile(r"^(?:cd|chdir|sl|set-location|pushd)\s+(.+)$", re.IGNORECASE)
 
 
-def collect_counts(source: Path) -> tuple[Counter, dict[str, Counter]]:
+def collect_counts(source: Path) -> tuple[Counter, dict[str, Counter], list[str]]:
     """Count commands AND track where they ran by replaying cd commands."""
     if not source.is_file():
         raise SystemExit(f"SOURCE file not found: {source}")
     counts: Counter = Counter()
     dirs: dict[str, Counter] = defaultdict(Counter)
+    commands: list[str] = []
     cwd: str | None = None
     text = source.read_text(encoding="utf-8", errors="replace")
     # join PSReadLine multi-line continuations (trailing backtick)
@@ -61,6 +63,7 @@ def collect_counts(source: Path) -> tuple[Counter, dict[str, Counter]]:
         cmd = normalize(line)
         if not cmd:
             continue
+        commands.append(cmd)
         counts[cmd] += 1
         if cwd:
             dirs[cmd][cwd] += 1
@@ -77,13 +80,18 @@ def collect_counts(source: Path) -> tuple[Counter, dict[str, Counter]]:
                 cwd = ntpath.normpath(str(Path.home()) + target[1:])
             elif cwd:
                 cwd = ntpath.normpath(ntpath.join(cwd, target))  # relative -> walk
-    return counts, dirs
+    recent = list(dict.fromkeys(reversed(commands)))[:RECENT_N]
+    return counts, dirs, recent
 
 
-def build_html(counts: Counter, dirs: dict[str, Counter]) -> str:
+def build_html(counts: Counter, dirs: dict[str, Counter], recent: list[str]) -> str:
     top = counts.most_common(TOP_N)
     if not top:
         raise SystemExit("No history found — nothing to visualize.")
+    node_cmds = dict(top)
+    for cmd in recent:
+        node_cmds.setdefault(cmd, counts[cmd])
+    top = sorted(node_cmds.items(), key=lambda item: (-item[1], item[0]))
     max_c, min_c = top[0][1], top[-1][1]
     nodes = [
         {
@@ -139,6 +147,17 @@ TEMPLATE = r"""<!DOCTYPE html>
   #search:focus { border-color:#41c7ff; box-shadow:0 0 22px rgba(65,199,255,.5); }
   #search::placeholder { color:#3d6fa3; }
   #hits { position:fixed; top:42px; right:36px; font-size:11px; color:#3d6fa3; }
+  #results { position:fixed; top:62px; right:22px; width:min(720px, calc(100vw - 44px));
+       max-height:42vh; overflow:auto; display:none; z-index:9;
+       background:rgba(8,18,40,.96); border:1px solid #1f5fa8; border-radius:10px;
+       box-shadow:0 0 26px rgba(31,143,255,.28); }
+  .result { display:flex; gap:12px; align-items:flex-start; padding:8px 10px;
+       color:#9fd8ff; font-size:12px; line-height:1.35; cursor:pointer;
+       border-top:1px solid rgba(31,95,168,.35); }
+  .result:first-child { border-top:0; }
+  .result:hover { background:rgba(65,199,255,.14); color:#fff; }
+  .result b { color:#3d6fa3; font-weight:400; flex:0 0 auto; }
+  .result span { word-break:break-all; }
   .node.dim { opacity:.06 !important; animation:none; pointer-events:none; }
   #backdrop { position:fixed; inset:0; background:rgba(2,4,12,.65); display:none;
        backdrop-filter:blur(2px); }
@@ -166,6 +185,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 <h1>⚡ CLI NEURON CLOUD — click to copy</h1>
 <input id="search" type="text" placeholder="search commands…  ( / )">
 <div id="hits"></div>
+<div id="results"></div>
 <div id="backdrop"></div>
 <div id="panel"></div>
 <div id="toast">copied</div>
@@ -298,15 +318,31 @@ function draw(ts) {
 // --- search: live filter, matches stay lit, rest fade ---
 const searchBox = document.getElementById('search');
 const hits = document.getElementById('hits');
+const results = document.getElementById('results');
 searchBox.addEventListener('input', () => {
   const q = searchBox.value.trim().toLowerCase();
   let shown = 0;
+  const matches = [];
   nodes.forEach(n => {
     n.dim = !!q && !n.cmd.toLowerCase().includes(q);
     n.el.classList.toggle('dim', n.dim);
-    if (!n.dim) shown++;
+    if (!n.dim) {
+      shown++;
+      if (q) matches.push(n);
+    }
   });
   hits.textContent = q ? shown + ' / ' + nodes.length : '';
+  results.style.display = q ? 'block' : 'none';
+  results.innerHTML = matches.slice(0, 30).map(n =>
+    '<div class="result" data-cmd="' + esc(n.cmd) + '"><b>' + n.count + '×</b><span>' + esc(n.cmd) + '</span></div>'
+  ).join('');
+});
+results.addEventListener('click', e => {
+  const row = e.target.closest('.result');
+  if (!row) return;
+  const d = DATA.find(item => item.cmd === row.dataset.cmd);
+  const node = nodes.find(item => item.cmd === row.dataset.cmd);
+  if (d && node) openPanel(d, node.el);
 });
 addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== searchBox) {
@@ -369,9 +405,9 @@ requestAnimationFrame(draw);
 
 
 def main() -> None:
-    counts, dirs = collect_counts(load_source())
+    counts, dirs, recent = collect_counts(load_source())
     out = Path(__file__).with_name("neuron_cloud.html")
-    out.write_text(build_html(counts, dirs), encoding="utf-8")
+    out.write_text(build_html(counts, dirs, recent), encoding="utf-8")
     total = sum(counts.values())
     print(f"Parsed {total} commands, {len(counts)} unique. Top 10:")
     for cmd, n in counts.most_common(10):

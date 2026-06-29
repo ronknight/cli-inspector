@@ -1,3 +1,5 @@
 /.env
 /.venv
 ConsoleHost_history.txt
+__pycache__/
+*.pyc

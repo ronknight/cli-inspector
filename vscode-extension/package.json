@@ -1,0 +1,80 @@
+{
+  "name": "cli-inspector",
+  "displayName": "CLI Inspector — Neuron Cloud",
+  "description": "Interactive neuron tag-cloud of your most-used shell command lines. Click a node to copy the full command.",
+  "version": "0.1.0",
+  "publisher": "cli-inspector",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ronknight/cli-inspector.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "shell",
+    "history",
+    "powershell",
+    "bash",
+    "zsh",
+    "command",
+    "visualization"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cliInspector.show",
+        "title": "CLI Inspector: Show Neuron Cloud",
+        "category": "CLI Inspector"
+      },
+      {
+        "command": "cliInspector.showForWorkspace",
+        "title": "CLI Inspector: Show Neuron Cloud (this workspace only)",
+        "category": "CLI Inspector"
+      },
+      {
+        "command": "cliInspector.pickHistoryFile",
+        "title": "CLI Inspector: Pick History File…",
+        "category": "CLI Inspector"
+      }
+    ],
+    "configuration": {
+      "title": "CLI Inspector",
+      "properties": {
+        "cliInspector.source": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the shell history file. Leave empty to auto-detect (PSReadLine `ConsoleHost_history.txt` on Windows, `~/.zsh_history` or `~/.bash_history` on macOS/Linux)."
+        },
+        "cliInspector.topN": {
+          "type": "number",
+          "default": 100,
+          "description": "How many of the most-frequent commands to render as large neuron nodes."
+        },
+        "cliInspector.recentN": {
+          "type": "number",
+          "default": 300,
+          "description": "How many recent unique commands to also include as nodes (in addition to the top-N)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

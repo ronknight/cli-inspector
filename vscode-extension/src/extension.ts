@@ -159,9 +159,10 @@ async function showCloud(
   const template = loadTemplate(context);
   // Pass a replacer FUNCTION (not a string) so `$&`/`$$` etc. inside commands
   // aren't interpreted as String.replace patterns and corrupt the JSON.
-  panel.webview.html = template.replace("/*__DATA__*/[]", () =>
-    safeJson(result.nodes)
-  );
+  // DATA = cloud nodes (top/recent subset); ROWS = every command, for search.
+  panel.webview.html = template
+    .replace("/*__DATA__*/[]", () => safeJson(result.nodes))
+    .replace("/*__ALL__*/[]", () => safeJson(result.rows));
 
   panel.webview.onDidReceiveMessage(
     (msg) => {

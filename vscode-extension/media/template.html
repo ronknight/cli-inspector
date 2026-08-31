@@ -77,7 +77,8 @@
 <div id="toast">copied</div>
 <script>
 const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
-const DATA = /*__DATA__*/[];
+const DATA = /*__DATA__*/[];   // cloud nodes (subset: top + recent)
+const ROWS = /*__ALL__*/[];    // every command in history — searched by the box
 const canvas = document.getElementById('web'), ctx = canvas.getContext('2d');
 const cloud = document.getElementById('cloud');
 let W, H, nodes = [];
@@ -208,28 +209,26 @@ const hits = document.getElementById('hits');
 const results = document.getElementById('results');
 searchBox.addEventListener('input', () => {
   const q = searchBox.value.trim().toLowerCase();
-  let shown = 0;
-  const matches = [];
+  // cloud nodes only dim/brighten — matches come from the FULL history (ROWS),
+  // so commands not drawn in the cloud still show up in the dropdown
   nodes.forEach(n => {
     n.dim = !!q && !n.cmd.toLowerCase().includes(q);
     n.el.classList.toggle('dim', n.dim);
-    if (!n.dim) {
-      shown++;
-      if (q) matches.push(n);
-    }
   });
-  hits.textContent = q ? shown + ' / ' + nodes.length : '';
+  const matches = q ? ROWS.filter(r => r.cmd.toLowerCase().includes(q)) : [];
+  hits.textContent = q ? matches.length + ' / ' + ROWS.length : '';
   results.style.display = q ? 'block' : 'none';
-  results.innerHTML = matches.slice(0, 30).map(n =>
-    '<div class="result" data-cmd="' + esc(n.cmd) + '"><b>' + n.count + '×</b><span>' + esc(n.cmd) + '</span></div>'
+  results.innerHTML = matches.slice(0, 30).map(r =>
+    '<div class="result" data-cmd="' + esc(r.cmd) + '"><b>' + r.count + '×</b><span>' + esc(r.cmd) + '</span></div>'
   ).join('');
 });
 results.addEventListener('click', e => {
   const row = e.target.closest('.result');
   if (!row) return;
-  const d = DATA.find(item => item.cmd === row.dataset.cmd);
-  const node = nodes.find(item => item.cmd === row.dataset.cmd);
-  if (d && node) openPanel(d, node.el);
+  const cmd = row.dataset.cmd;
+  const d = ROWS.find(item => item.cmd === cmd) || DATA.find(item => item.cmd === cmd);
+  const node = nodes.find(item => item.cmd === cmd);
+  if (d) openPanel(d, node ? node.el : undefined);
 });
 addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== searchBox) {

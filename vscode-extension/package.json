@@ -3,7 +3,7 @@
   "displayName": "CLI Inspector — Neuron Cloud",
   "description": "Interactive neuron tag-cloud of your most-used shell command lines. Click a node to copy the full command.",
   "version": "0.1.0",
-  "publisher": "cli-inspector",
+  "publisher": "pinoyitsolution",
   "license": "MIT",
   "repository": {
     "type": "git",

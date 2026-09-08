@@ -1,14 +1,22 @@
 """CLI Inspector — neuron tag cloud of most-used shell command lines.
 
-Reads history file from SOURCE in .env, counts FULL command lines
-(command + arguments), generates an interactive HTML brain-neuron
-visualization. Click node = copy full command.
+Reads your shell history, counts FULL command lines (command + arguments) and
+generates an interactive HTML brain-neuron visualization. Click node = copy
+full command.
+
+Cross-platform: PSReadLine (Windows), zsh extended history, plain bash history
+and fish history (macOS/Linux). The history file is auto-detected; override it
+with --source, or with SOURCE in a .env next to this script.
 """
 
+import argparse
 import json
 import math
 import ntpath
+import os
+import posixpath
 import re
+import sys
 import webbrowser
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -16,20 +24,186 @@ from pathlib import Path
 TOP_N = 100
 RECENT_N = 300
 
+# ---------------------------------------------------------------- source ----
 
-def load_source() -> Path:
+
+def env_source() -> Path | None:
+    """SOURCE=... from a .env next to this script, if present."""
     env = Path(__file__).with_name(".env")
     if env.is_file():
         for line in env.read_text(encoding="utf-8").splitlines():
             key, _, val = line.partition("=")
             if key.strip() == "SOURCE" and val.strip():
-                return Path(val.strip().strip('"'))
-    raise SystemExit("SOURCE not set in .env")
+                return Path(os.path.expanduser(val.strip().strip('"')))
+    return None
 
+
+def default_sources() -> list[Path]:
+    """Candidate history files for this platform, in priority order."""
+    home = Path.home()
+    candidates: list[Path] = []
+
+    # An explicit $HISTFILE is the shell's own answer — trust it first.
+    histfile = os.environ.get("HISTFILE")
+    if histfile:
+        candidates.append(Path(os.path.expanduser(histfile)))
+
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        candidates.append(
+            appdata
+            / "Microsoft"
+            / "Windows"
+            / "PowerShell"
+            / "PSReadLine"
+            / "ConsoleHost_history.txt"
+        )
+
+    zsh = [home / ".zsh_history", home / ".zhistory", home / ".histfile"]
+    bash = [home / ".bash_history"]
+    # zsh is the default shell on macOS; bash still is on most Linux boxes.
+    candidates += zsh + bash if sys.platform == "darwin" else bash + zsh
+
+    xdg = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
+    candidates.append(xdg / "fish" / "fish_history")
+    candidates.append(home / ".local" / "share" / "fish" / "fish_history")
+
+    seen: set[Path] = set()
+    found: list[Path] = []
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        if p.is_file():
+            found.append(p)
+    return found
+
+
+def resolve_source(explicit: str | None) -> Path:
+    """--source, then .env SOURCE, then auto-detection."""
+    if explicit:
+        p = Path(os.path.expanduser(explicit))
+        if not p.is_file():
+            raise SystemExit(f"History file not found: {p}")
+        return p
+
+    from_env = env_source()
+    if from_env:
+        if not from_env.is_file():
+            raise SystemExit(f"SOURCE file not found: {from_env}")
+        return from_env
+
+    found = default_sources()
+    if not found:
+        raise SystemExit(
+            "No shell history file found. Pass --source /path/to/history "
+            "(or set SOURCE in .env)."
+        )
+    if os.environ.get("HISTFILE") and found[0] == Path(
+        os.path.expanduser(os.environ["HISTFILE"])
+    ):
+        return found[0]
+    # Several usually exist side by side (a stale ~/.bash_history next to a live
+    # ~/.zsh_history); the one written most recently is the one in use.
+    non_empty = [p for p in found if p.stat().st_size > 0]
+    return max(non_empty or found, key=lambda p: p.stat().st_mtime)
+
+
+# ---------------------------------------------------------------- reading ---
+
+ZSH_ENTRY_RE = re.compile(r"^:\s\d+:\d+;")
+BASH_TIMESTAMP_RE = re.compile(r"^#\d+$")
+FISH_ENTRY_RE = re.compile(r"^- cmd:\s?(.*)$")
+
+
+def read_history(source: Path) -> str:
+    """
+    Read a history file as text.
+
+    zsh "metafies" bytes >= 0x80 as 0x83 followed by (byte ^ 32) when it writes
+    $HISTFILE, so a naive decode turns every accented character or emoji into
+    mojibake. Undo that first, then decode as UTF-8 (lossy — history files can
+    hold bytes from any encoding).
+    """
+    raw = source.read_bytes()
+    if 0x83 in raw:
+        out = bytearray()
+        i = 0
+        while i < len(raw):
+            if raw[i] == 0x83 and i + 1 < len(raw):
+                out.append(raw[i + 1] ^ 32)
+                i += 2
+            else:
+                out.append(raw[i])
+                i += 1
+        raw = bytes(out)
+    return raw.decode("utf-8", errors="replace")
+
+
+def detect_format(text: str, source: Path | None = None) -> str:
+    """Guess the history layout: zsh | bash | fish | psreadline."""
+    name = source.name.lower() if source else ""
+    if "fish" in name:
+        return "fish"
+    if "consolehost_history" in name:
+        return "psreadline"
+
+    zsh = fish = content = 0
+    for line in text.split("\n")[:200]:
+        if not line.strip():
+            continue
+        content += 1
+        if ZSH_ENTRY_RE.match(line):
+            zsh += 1
+        elif line.startswith("- cmd: "):
+            fish += 1
+    if not content:
+        return "bash"
+    if fish / content > 0.2:
+        return "fish"
+    if zsh / content > 0.2:
+        return "zsh"
+    return "bash"
+
+
+def extract_lines(text: str, fmt: str) -> list[str]:
+    """Undo per-entry metadata and multi-line continuations."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    if fmt == "fish":
+        return [
+            m.group(1).replace("\\n", " ").replace("\\t", " ").replace("\\\\", "\\")
+            for m in (FISH_ENTRY_RE.match(line) for line in text.split("\n"))
+            if m
+        ]
+
+    if fmt == "psreadline":
+        # join PSReadLine multi-line continuations (trailing backtick)
+        return text.replace("`\n", " ").split("\n")
+
+    # zsh escapes an embedded newline as a trailing backslash; so does bash
+    # with `shopt -s cmdhist`.
+    joined = text.replace("\\\n", " ")
+    lines = []
+    for line in joined.split("\n"):
+        if fmt == "zsh" and ZSH_ENTRY_RE.match(line):
+            lines.append(line[line.index(";") + 1 :])
+        elif fmt == "zsh":
+            lines.append(line)
+        elif not BASH_TIMESTAMP_RE.match(line.strip()):
+            lines.append(line)
+    return lines
+
+
+# --------------------------------------------------------------- counting ---
 
 # any venv activation, any path/prefix style -> one canonical command
-ACTIVATE_RE = re.compile(
+WIN_ACTIVATE_RE = re.compile(
     r"^(?:&\s*)?['\"]?[^'\"]*venv[\\/]scripts[\\/]activate(?:\.ps1|\.bat)?['\"]?$",
+    re.IGNORECASE,
+)
+POSIX_ACTIVATE_RE = re.compile(
+    r"^(?:source|\.)\s+['\"]?[^'\"]*venv/bin/activate(?:\.\w+)?['\"]?$",
     re.IGNORECASE,
 )
 
@@ -40,52 +214,108 @@ def normalize(line: str) -> str | None:
         return None
     # collapse internal whitespace so same command counts as one
     line = re.sub(r"\s+", " ", line)
-    if ACTIVATE_RE.match(line):
+    if WIN_ACTIVATE_RE.match(line):
         return r".\venv\Scripts\Activate.ps1"
+    if POSIX_ACTIVATE_RE.match(line):
+        return "source venv/bin/activate"
     return line
 
 
-CD_RE = re.compile(r"^(?:cd|chdir|sl|set-location|pushd)\s+(.+)$", re.IGNORECASE)
+CD_RE = re.compile(r"^(cd|chdir|sl|set-location|pushd)(?:\s+(.+))?$", re.IGNORECASE)
+POPD_RE = re.compile(r"^popd(?:\s|$)", re.IGNORECASE)
 
 
-def collect_counts(source: Path) -> tuple[Counter, dict[str, Counter], list[str]]:
+def cd_target(arg: str) -> str:
+    """Strip one layer of quotes / stop at a chain operator."""
+    target = arg.strip()
+    if target[:1] in "'\"":
+        return target[1:].split(target[0], 1)[0]
+    target = re.split(r"\s*[;&|]", target, maxsplit=1)[0].strip()
+    # `cd -- foo`, `cd -P /tmp` — drop leading option words
+    while re.match(r"^-[-\w]*\s", target):
+        target = re.sub(r"^-[-\w]*\s+", "", target)
+    return target
+
+
+def collect_counts(
+    source: Path, recent_n: int = RECENT_N
+) -> tuple[Counter, dict[str, Counter], list[str]]:
     """Count commands AND track where they ran by replaying cd commands."""
     if not source.is_file():
-        raise SystemExit(f"SOURCE file not found: {source}")
+        raise SystemExit(f"History file not found: {source}")
+
+    windows = sys.platform == "win32"
+    pathmod = ntpath if windows else posixpath
+    home = str(Path.home())
+
     counts: Counter = Counter()
     dirs: dict[str, Counter] = defaultdict(Counter)
     commands: list[str] = []
     cwd: str | None = None
-    text = source.read_text(encoding="utf-8", errors="replace")
-    # join PSReadLine multi-line continuations (trailing backtick)
-    text = text.replace("`\n", " ")
-    for line in text.splitlines():
-        cmd = normalize(line)
+    previous: str | None = None
+    stack: list[str] = []
+
+    text = read_history(source)
+    for raw in extract_lines(text, detect_format(text, source)):
+        cmd = normalize(raw)
         if not cmd:
             continue
         commands.append(cmd)
         counts[cmd] += 1
         if cwd:
             dirs[cmd][cwd] += 1
+
+        if POPD_RE.match(cmd):
+            if stack:
+                previous, cwd = cwd, stack.pop()
+            continue
+
         m = CD_RE.match(cmd)
-        if m:
-            target = m.group(1).strip()
-            if target[:1] in "'\"":          # quoted path: take quoted span
-                target = target[1:].split(target[0], 1)[0]
-            else:                            # unquoted: stop at chain operator
-                target = re.split(r"\s*[;&|]", target, maxsplit=1)[0].strip()
-            if re.match(r"^[A-Za-z]:[\\/]", target) or target.startswith("\\\\"):
-                cwd = ntpath.normpath(target)            # absolute -> jump
-            elif target.startswith("~"):
-                cwd = ntpath.normpath(str(Path.home()) + target[1:])
-            elif cwd:
-                cwd = ntpath.normpath(ntpath.join(cwd, target))  # relative -> walk
-    recent = list(dict.fromkeys(reversed(commands)))[:RECENT_N]
+        if not m:
+            continue
+        if m.group(1).lower() == "pushd" and cwd:
+            stack.append(cwd)
+
+        arg = m.group(2)
+        if arg is None:                              # bare `cd` -> home
+            previous, cwd = cwd, pathmod.normpath(home)
+            continue
+
+        target = cd_target(arg)
+        if not target:
+            continue
+        if target == "-":                            # `cd -` -> previous
+            if previous:
+                previous, cwd = cwd, previous
+            continue
+        target = re.sub(
+            r"^(?:\$HOME|\$\{HOME\}|%USERPROFILE%)(?=$|[\\/])", home, target,
+            flags=re.IGNORECASE,
+        )
+
+        if windows:
+            absolute = bool(re.match(r"^[A-Za-z]:[\\/]", target)) or target.startswith("\\\\")
+        else:
+            absolute = target.startswith("/")
+
+        if absolute:
+            previous, cwd = cwd, pathmod.normpath(target)      # absolute -> jump
+        elif target == "~" or re.match(r"^~[\\/]", target):
+            previous, cwd = cwd, pathmod.normpath(home + target[1:])
+        elif cwd:
+            previous, cwd = cwd, pathmod.normpath(pathmod.join(cwd, target))  # relative -> walk
+
+    recent = list(dict.fromkeys(reversed(commands)))[:recent_n]
     return counts, dirs, recent
 
 
-def build_html(counts: Counter, dirs: dict[str, Counter], recent: list[str]) -> str:
-    top = counts.most_common(TOP_N)
+def build_html(
+    counts: Counter,
+    dirs: dict[str, Counter],
+    recent: list[str],
+    top_n: int = TOP_N,
+) -> str:
+    top = counts.most_common(top_n)
     if not top:
         raise SystemExit("No history found — nothing to visualize.")
     node_cmds = dict(top)
@@ -109,8 +339,13 @@ def build_html(counts: Counter, dirs: dict[str, Counter], recent: list[str]) -> 
         {"cmd": cmd, "count": n, "dirs": dirs.get(cmd, Counter()).most_common(3)}
         for cmd, n in counts.most_common()
     ]
-    html = TEMPLATE.replace("/*__DATA__*/[]", json.dumps(nodes))
-    return html.replace("/*__ALL__*/[]", json.dumps(allrows))
+    # Escape < and > so a command containing </script> can't break out of the
+    # inline <script> and inject markup into the page.
+    def safe(value: object) -> str:
+        return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e")
+
+    html = TEMPLATE.replace("/*__DATA__*/[]", safe(nodes))
+    return html.replace("/*__ALL__*/[]", safe(allrows))
 
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -405,15 +640,27 @@ requestAnimationFrame(draw);
 
 
 def main() -> None:
-    counts, dirs, recent = collect_counts(load_source())
-    out = Path(__file__).with_name("neuron_cloud.html")
-    out.write_text(build_html(counts, dirs, recent), encoding="utf-8")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--source", help="history file to read (default: auto-detect)")
+    ap.add_argument("--top", type=int, default=TOP_N, help=f"large nodes (default {TOP_N})")
+    ap.add_argument("--recent", type=int, default=RECENT_N,
+                    help=f"recent unique commands to include (default {RECENT_N})")
+    ap.add_argument("--out", help="output HTML path (default: neuron_cloud.html next to this script)")
+    ap.add_argument("--no-open", action="store_true", help="don't open the result in a browser")
+    args = ap.parse_args()
+
+    source = resolve_source(args.source)
+    counts, dirs, recent = collect_counts(source, args.recent)
+    out = Path(args.out).expanduser() if args.out else Path(__file__).with_name("neuron_cloud.html")
+    out.write_text(build_html(counts, dirs, recent, args.top), encoding="utf-8")
     total = sum(counts.values())
+    print(f"Read {source}")
     print(f"Parsed {total} commands, {len(counts)} unique. Top 10:")
     for cmd, n in counts.most_common(10):
         print(f"  {n:6d}  {cmd}")
     print(f"\nWrote {out}")
-    webbrowser.open(out.as_uri())
+    if not args.no_open:
+        webbrowser.open(out.as_uri())
 
 
 if __name__ == "__main__":

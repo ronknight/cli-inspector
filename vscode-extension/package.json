@@ -1,0 +1,88 @@
+{
+  "name": "cli-inspector",
+  "displayName": "CLI Inspector — Neuron Cloud",
+  "description": "Interactive neuron tag-cloud of your most-used shell command lines. Click a node to copy the full command.",
+  "version": "0.2.0",
+  "publisher": "pinoyitsolution",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#04060f",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ronknight/cli-inspector.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "shell",
+    "history",
+    "powershell",
+    "bash",
+    "zsh",
+    "fish",
+    "command",
+    "visualization",
+    "macos"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cliInspector.show",
+        "title": "CLI Inspector: Show Neuron Cloud",
+        "category": "CLI Inspector"
+      },
+      {
+        "command": "cliInspector.showForWorkspace",
+        "title": "CLI Inspector: Show Neuron Cloud (this workspace only)",
+        "category": "CLI Inspector"
+      },
+      {
+        "command": "cliInspector.pickHistoryFile",
+        "title": "CLI Inspector: Pick History File…",
+        "category": "CLI Inspector"
+      }
+    ],
+    "configuration": {
+      "title": "CLI Inspector",
+      "properties": {
+        "cliInspector.source": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the shell history file (`~` is expanded). Leave empty to auto-detect: PSReadLine `ConsoleHost_history.txt` on Windows, and `$HISTFILE`, `~/.zsh_history`, `~/.bash_history` or fish history on macOS/Linux — whichever was written most recently."
+        },
+        "cliInspector.topN": {
+          "type": "number",
+          "default": 100,
+          "description": "How many of the most-frequent commands to render as large neuron nodes."
+        },
+        "cliInspector.recentN": {
+          "type": "number",
+          "default": 300,
+          "description": "How many recent unique commands to also include as nodes (in addition to the top-N)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

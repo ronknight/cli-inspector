@@ -1,0 +1,9 @@
+.gitignore
+.vscodeignore
+tsconfig.json
+node_modules/**
+src/**
+test/**
+out/**/*.map
+**/*.vsix
+media/icon.svg
